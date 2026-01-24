@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tkinter import messagebox, ttk
 from typing import Any, Optional
@@ -27,7 +27,7 @@ from typing import Any, Optional
 # ============================================================================
 
 APP_NAME = "Claude Code Recall"
-APP_VERSION = "1.0.0"
+APP_VERSION = "1.1.0"
 DEFAULT_WINDOW_SIZE = "1200x800"
 
 # ============================================================================
@@ -59,6 +59,8 @@ TRANSLATIONS = {
         "slash_command_only": "(スラッシュコマンドのみ)",
         "user_label": "👤 User",
         "assistant_label": "🤖 Assistant",
+        "chart_title": "過去30日間のプロンプト数",
+        "chart_prompts": "{count}件",
     },
     "en": {
         "app_title": "Claude Code Recall - Session History Viewer",
@@ -84,6 +86,8 @@ TRANSLATIONS = {
         "slash_command_only": "(Slash commands only)",
         "user_label": "👤 User",
         "assistant_label": "🤖 Assistant",
+        "chart_title": "Prompts in the last 30 days",
+        "chart_prompts": "{count}",
     },
 }
 
@@ -226,6 +230,11 @@ class ClaudeCodeRecall:
         self.filter_system_sessions = tk.BooleanVar(value=True)
         self.filter_slash_commands = tk.BooleanVar(value=True)
 
+        # 棒グラフ関連
+        self.chart_canvas: Optional[tk.Canvas] = None
+        self.chart_bars: dict[str, int] = {}  # date_str -> canvas item id
+        self.selected_date: Optional[str] = None
+
         # UI構築
         self._setup_ui()
         self._setup_text_context_menu()
@@ -247,12 +256,16 @@ class ClaudeCodeRecall:
         self._setup_right_panel()
 
     def _setup_left_panel(self) -> None:
-        """左パネル（セッションリスト）を構築する。"""
+        """左パネル（セッションリスト + 棒グラフ）を構築する。"""
         left_frame = ttk.Frame(self.paned)
         self.paned.add(left_frame, weight=1)
 
+        # 上部フレーム（セッションリスト）- 3/4
+        top_frame = ttk.Frame(left_frame)
+        top_frame.pack(fill=tk.BOTH, expand=True)
+
         # 検索バー
-        search_frame = ttk.Frame(left_frame)
+        search_frame = ttk.Frame(top_frame)
         search_frame.pack(fill=tk.X, pady=(0, 5))
 
         ttk.Label(search_frame, text=get_text("search")).pack(side=tk.LEFT)
@@ -262,7 +275,7 @@ class ClaudeCodeRecall:
         search_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(5, 0))
 
         # フィルターオプション
-        filter_frame = ttk.Frame(left_frame)
+        filter_frame = ttk.Frame(top_frame)
         filter_frame.pack(fill=tk.X, pady=(0, 5))
 
         ttk.Checkbutton(
@@ -280,11 +293,11 @@ class ClaudeCodeRecall:
         ).pack(side=tk.LEFT, padx=(10, 0))
 
         # セッション数表示
-        self.count_label = ttk.Label(left_frame, text="")
+        self.count_label = ttk.Label(top_frame, text="")
         self.count_label.pack(anchor=tk.W)
 
         # セッションリスト（Treeview）
-        list_frame = ttk.Frame(left_frame)
+        list_frame = ttk.Frame(top_frame)
         list_frame.pack(fill=tk.BOTH, expand=True)
 
         columns = ("project", "date", "first_message")
@@ -320,6 +333,282 @@ class ClaudeCodeRecall:
             label=get_text("menu_delete"), command=self._delete_selected_session
         )
         self.session_tree.bind("<Button-3>", self._on_session_right_click)
+
+        # 下部フレーム（棒グラフ）- 1/4
+        self._setup_chart_panel(left_frame)
+
+    def _setup_chart_panel(self, parent: ttk.Frame) -> None:
+        """棒グラフパネルを構築する。
+
+        Args:
+            parent: 親フレーム
+        """
+        chart_frame = ttk.LabelFrame(parent, text=get_text("chart_title"))
+        chart_frame.pack(fill=tk.BOTH, pady=(5, 0), ipady=5)
+
+        # Canvas for chart (height fixed to ~1/4 of typical window)
+        self.chart_canvas = tk.Canvas(
+            chart_frame,
+            height=120,
+            bg="#f8f8f8",
+            highlightthickness=0,
+        )
+        self.chart_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+        # Bind resize event
+        self.chart_canvas.bind("<Configure>", lambda e: self._draw_chart())
+
+    def _get_prompt_counts_by_date(self) -> dict[str, int]:
+        """過去30日間の日別プロンプト数（Userメッセージ数）を取得する。
+
+        Returns:
+            日付文字列をキー、プロンプト数を値とする辞書
+        """
+        counts: dict[str, int] = {}
+        today = datetime.now().date()
+        exclude_slash = self.filter_slash_commands.get()
+
+        # Initialize all 30 days with 0
+        for i in range(30):
+            date = today - timedelta(days=29 - i)
+            date_str = date.strftime("%Y-%m-%d")
+            counts[date_str] = 0
+
+        # Count user prompts (filtered)
+        filtered = self._get_filtered_sessions()
+        for session in filtered:
+            messages = session.get("messages", [])
+            for msg in messages:
+                # Count only user messages
+                if msg.get("type") != "user":
+                    continue
+                # Exclude slash commands if filter is enabled
+                if exclude_slash and msg.get("is_slash_command", False):
+                    continue
+
+                ts = msg.get("timestamp")
+                if ts:
+                    msg_date = self._timestamp_to_date(ts)
+                    if msg_date:
+                        date_str = msg_date.strftime("%Y-%m-%d")
+                        if date_str in counts:
+                            counts[date_str] += 1
+
+        return counts
+
+    def _timestamp_to_date(self, ts: Any) -> Optional[datetime]:
+        """タイムスタンプを日付に変換する。
+
+        Args:
+            ts: タイムスタンプ値
+
+        Returns:
+            datetime オブジェクト、または None
+        """
+        try:
+            if isinstance(ts, str):
+                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                return dt_utc.astimezone().replace(tzinfo=None)
+            elif isinstance(ts, (int, float)):
+                dt_utc = datetime.utcfromtimestamp(ts / 1000)
+                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
+                return dt_aware.astimezone().replace(tzinfo=None)
+        except (ValueError, OSError):
+            pass
+        return None
+
+    def _draw_chart(self) -> None:
+        """棒グラフを描画する。"""
+        if self.chart_canvas is None:
+            return
+
+        self.chart_canvas.delete("all")
+        self.chart_bars = {}
+
+        counts = self._get_prompt_counts_by_date()
+        if not counts:
+            return
+
+        # Canvas dimensions
+        canvas_width = self.chart_canvas.winfo_width()
+        canvas_height = self.chart_canvas.winfo_height()
+
+        if canvas_width <= 1 or canvas_height <= 1:
+            return
+
+        # Chart margins
+        margin_left = 30
+        margin_right = 10
+        margin_top = 10
+        margin_bottom = 25
+
+        chart_width = canvas_width - margin_left - margin_right
+        chart_height = canvas_height - margin_top - margin_bottom
+
+        if chart_width <= 0 or chart_height <= 0:
+            return
+
+        # Get sorted dates
+        dates = sorted(counts.keys())
+        num_bars = len(dates)
+        max_count = max(counts.values()) if counts.values() else 1
+        max_count = max(max_count, 1)  # Avoid division by zero
+
+        # Bar dimensions
+        bar_width = max(2, (chart_width - num_bars) / num_bars)
+        gap = 1
+
+        # Draw Y-axis scale
+        self.chart_canvas.create_text(
+            margin_left - 5,
+            margin_top,
+            text=str(max_count),
+            anchor="e",
+            font=("", 8),
+            fill="#666666",
+        )
+        self.chart_canvas.create_text(
+            margin_left - 5,
+            margin_top + chart_height,
+            text="0",
+            anchor="e",
+            font=("", 8),
+            fill="#666666",
+        )
+
+        # Draw bars
+        for i, date_str in enumerate(dates):
+            count = counts[date_str]
+            bar_height = (count / max_count) * chart_height if max_count > 0 else 0
+
+            x1 = margin_left + i * (bar_width + gap)
+            x2 = x1 + bar_width
+            y2 = margin_top + chart_height
+            y1 = y2 - bar_height
+
+            # Determine color
+            if self.selected_date == date_str:
+                fill_color = "#ff6600"  # Highlight color (orange)
+            elif count > 0:
+                fill_color = "#4a90d9"  # Normal bar color (blue)
+            else:
+                fill_color = "#e0e0e0"  # Zero count color (light gray)
+
+            bar_id = self.chart_canvas.create_rectangle(
+                x1, y1, x2, y2,
+                fill=fill_color,
+                outline="",
+            )
+            self.chart_bars[date_str] = bar_id
+
+            # Bind tooltip
+            self.chart_canvas.tag_bind(
+                bar_id,
+                "<Enter>",
+                lambda e, d=date_str, c=count: self._show_chart_tooltip(e, d, c),
+            )
+            self.chart_canvas.tag_bind(
+                bar_id, "<Leave>", lambda e: self._hide_chart_tooltip()
+            )
+
+        # Draw X-axis labels (show only a few dates)
+        label_interval = max(1, num_bars // 5)
+        for i, date_str in enumerate(dates):
+            if i % label_interval == 0 or i == num_bars - 1:
+                x = margin_left + i * (bar_width + gap) + bar_width / 2
+                y = margin_top + chart_height + 12
+                # Show only month/day
+                label = date_str[5:]  # "MM-DD"
+                self.chart_canvas.create_text(
+                    x, y,
+                    text=label,
+                    font=("", 7),
+                    fill="#666666",
+                )
+
+    def _show_chart_tooltip(self, event: tk.Event, date_str: str, count: int) -> None:
+        """棒グラフのツールチップを表示する。
+
+        Args:
+            event: イベントオブジェクト
+            date_str: 日付文字列
+            count: セッション数
+        """
+        if self.chart_canvas is None:
+            return
+
+        # Remove existing tooltip
+        self.chart_canvas.delete("tooltip")
+
+        text = f"{date_str}: {get_text('chart_prompts', count=count)}"
+        x = event.x
+        y = event.y - 20
+
+        # Background
+        bbox_id = self.chart_canvas.create_rectangle(
+            x - 40, y - 10, x + 40, y + 10,
+            fill="#333333",
+            outline="",
+            tags="tooltip",
+        )
+        text_id = self.chart_canvas.create_text(
+            x, y,
+            text=text,
+            fill="white",
+            font=("", 8),
+            tags="tooltip",
+        )
+
+        # Adjust background size to text
+        bbox = self.chart_canvas.bbox(text_id)
+        if bbox:
+            self.chart_canvas.coords(
+                bbox_id,
+                bbox[0] - 5, bbox[1] - 3, bbox[2] + 5, bbox[3] + 3
+            )
+
+    def _hide_chart_tooltip(self) -> None:
+        """棒グラフのツールチップを非表示にする。"""
+        if self.chart_canvas is not None:
+            self.chart_canvas.delete("tooltip")
+
+    def _update_chart_highlight(self, session: Optional[dict[str, Any]]) -> None:
+        """選択されたセッションに対応する棒をハイライトする。
+
+        Args:
+            session: 選択されたセッション（Noneの場合はハイライト解除）
+        """
+        if self.chart_canvas is None:
+            return
+
+        # Get date of selected session
+        new_selected_date: Optional[str] = None
+        if session:
+            ts = session.get("timestamp")
+            if ts and ts != datetime.min:
+                new_selected_date = ts.date().strftime("%Y-%m-%d")
+
+        # Update only if selection changed
+        if new_selected_date == self.selected_date:
+            return
+
+        old_date = self.selected_date
+        self.selected_date = new_selected_date
+
+        # Update bar colors
+        counts = self._get_prompt_counts_by_date()
+
+        # Reset old highlight
+        if old_date and old_date in self.chart_bars:
+            bar_id = self.chart_bars[old_date]
+            count = counts.get(old_date, 0)
+            color = "#4a90d9" if count > 0 else "#e0e0e0"
+            self.chart_canvas.itemconfig(bar_id, fill=color)
+
+        # Set new highlight
+        if new_selected_date and new_selected_date in self.chart_bars:
+            bar_id = self.chart_bars[new_selected_date]
+            self.chart_canvas.itemconfig(bar_id, fill="#ff6600")
 
     def _setup_right_panel(self) -> None:
         """右パネル（会話表示）を構築する。"""
@@ -514,23 +803,29 @@ class ClaudeCodeRecall:
     def _parse_timestamp(
         self, ts: Any, current_latest: Optional[datetime]
     ) -> Optional[datetime]:
-        """タイムスタンプをパースする。
+        """タイムスタンプをパースしてローカルタイムゾーンに変換する。
 
         Args:
             ts: タイムスタンプ値
             current_latest: 現在の最新タイムスタンプ
 
         Returns:
-            更新されたタイムスタンプ
+            更新されたタイムスタンプ（ローカルタイムゾーン）
         """
         if ts is None:
             return current_latest
 
         try:
             if isinstance(ts, str):
-                dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                # ISO format (UTC) -> local timezone
+                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+                dt = dt_utc.astimezone().replace(tzinfo=None)
             elif isinstance(ts, (int, float)):
-                dt = datetime.fromtimestamp(ts / 1000)
+                # Unix timestamp in milliseconds (UTC) -> local timezone
+                dt_utc = datetime.utcfromtimestamp(ts / 1000)
+                # Convert UTC naive to aware, then to local
+                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
+                dt = dt_aware.astimezone().replace(tzinfo=None)
             else:
                 return current_latest
 
@@ -647,6 +942,7 @@ class ClaudeCodeRecall:
         """検索フィルタを適用する。"""
         filtered = self._get_filtered_sessions()
         self._populate_session_list(filtered)
+        self._draw_chart()
 
     def _on_slash_filter_change(self) -> None:
         """スラッシュコマンドフィルター変更時の処理。"""
@@ -696,7 +992,9 @@ class ClaudeCodeRecall:
             idx = int(selection[0])
             filtered = self._get_filtered_sessions()
             if idx < len(filtered):
-                self._display_conversation(filtered[idx])
+                session = filtered[idx]
+                self._display_conversation(session)
+                self._update_chart_highlight(session)
         except (ValueError, IndexError):
             pass
 
@@ -775,22 +1073,27 @@ class ClaudeCodeRecall:
         self.conversation_text.insert(tk.END, "─" * 80 + "\n\n", "separator")
 
     def _format_timestamp(self, timestamp: Any) -> str:
-        """タイムスタンプを文字列にフォーマットする。
+        """タイムスタンプをローカルタイムゾーンで文字列にフォーマットする。
 
         Args:
             timestamp: タイムスタンプ値
 
         Returns:
-            フォーマットされた文字列
+            フォーマットされた文字列（ローカルタイムゾーン）
         """
         if not timestamp:
             return ""
 
         try:
             if isinstance(timestamp, str):
-                dt = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                # ISO format (UTC) -> local timezone
+                dt_utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+                dt = dt_utc.astimezone().replace(tzinfo=None)
             elif isinstance(timestamp, (int, float)):
-                dt = datetime.fromtimestamp(timestamp / 1000)
+                # Unix timestamp in milliseconds (UTC) -> local timezone
+                dt_utc = datetime.utcfromtimestamp(timestamp / 1000)
+                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
+                dt = dt_aware.astimezone().replace(tzinfo=None)
             else:
                 return ""
             return dt.strftime("%Y-%m-%d %H:%M:%S")
