@@ -3,10 +3,6 @@
 # 企画意図を含むファイル（非公開）
 CLAUDE.md
 
-# 旧ファイル名
-claude_session_viewer.py
-claude_session_viewer.bat
-
 # Python
 __pycache__/
 *.py[cod]

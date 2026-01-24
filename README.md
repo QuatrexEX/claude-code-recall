@@ -8,7 +8,7 @@
 
 ## 概要
 
-Claude Code Recall は、[Claude Code](https://claude.ai/claude-code) の全プロジェクトのセッション履歴を横断的に検索・閲覧・管理できるデスクトップアプリケーションです。
+Claude Code Recall は、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) の全プロジェクトのセッション履歴を横断的に検索・閲覧・管理できるデスクトップアプリケーションです。
 
 **公式にはない機能**を提供します：
 - 全プロジェクトを横断したセッション検索
@@ -54,7 +54,7 @@ Claude Code Recall は、[Claude Code](https://claude.ai/claude-code) の全プ�
 ### 方法1: リポジトリをクローン
 
 ```bash
-git clone https://github.com/Quatrex/claude-code-recall.git
+git clone https://github.com/QuatrexEX/claude-code-recall.git
 cd claude-code-recall
 python claude_code_recall.py
 ```
@@ -116,7 +116,7 @@ Copyright (c) 2026 Quatrex
 **Quatrex**
 
 - X (Twitter): [@Quatrex](https://x.com/Quatrex)
-- GitHub: [Quatrex](https://github.com/Quatrex)
+- GitHub: [QuatrexEX](https://github.com/QuatrexEX)
 
 ## コントリビューション
 
