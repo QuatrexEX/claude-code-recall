@@ -1,0 +1,12 @@
+# Claude Code Recall - Dependencies
+#
+# このアプリケーションはPython標準ライブラリのみを使用しています。
+# 追加の依存関係はありません。
+#
+# 必要なPythonバージョン: 3.9以上
+# 必要な標準ライブラリ: tkinter (通常はPythonに含まれています)
+#
+# Linuxでtkinterがない場合:
+#   Ubuntu/Debian: sudo apt-get install python3-tk
+#   Fedora: sudo dnf install python3-tkinter
+#   Arch: sudo pacman -S tk
