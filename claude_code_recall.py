@@ -61,6 +61,7 @@ TRANSLATIONS = {
         "assistant_label": "🤖 Assistant",
         "chart_title": "過去30日間のプロンプト数",
         "chart_prompts": "{count}件",
+        "last_updated": "最終更新: {time}",
     },
     "en": {
         "app_title": "Claude Code Recall - Session History Viewer",
@@ -88,6 +89,7 @@ TRANSLATIONS = {
         "assistant_label": "🤖 Assistant",
         "chart_title": "Prompts in the last 30 days",
         "chart_prompts": "{count}",
+        "last_updated": "Last updated: {time}",
     },
 }
 
@@ -235,6 +237,9 @@ class ClaudeCodeRecall:
         self.chart_bars: dict[str, int] = {}  # date_str -> canvas item id
         self.selected_date: Optional[str] = None
 
+        # 最終更新日時
+        self.last_updated: Optional[datetime] = None
+
         # UI構築
         self._setup_ui()
         self._setup_text_context_menu()
@@ -245,6 +250,9 @@ class ClaudeCodeRecall:
         # ログ設定
         logging.basicConfig(level=logging.WARNING)
         self.logger = logging.getLogger(__name__)
+
+        # 自動再読み込みタイマー開始（10分間隔）
+        self._schedule_auto_reload()
 
     def _setup_ui(self) -> None:
         """UIを構築する。"""
@@ -292,9 +300,15 @@ class ClaudeCodeRecall:
             command=self._on_slash_filter_change,
         ).pack(side=tk.LEFT, padx=(10, 0))
 
-        # セッション数表示
-        self.count_label = ttk.Label(top_frame, text="")
-        self.count_label.pack(anchor=tk.W)
+        # セッション数・最終更新日時表示
+        status_frame = ttk.Frame(top_frame)
+        status_frame.pack(fill=tk.X)
+
+        self.count_label = ttk.Label(status_frame, text="")
+        self.count_label.pack(side=tk.LEFT)
+
+        self.updated_label = ttk.Label(status_frame, text="", foreground="#666666")
+        self.updated_label.pack(side=tk.RIGHT)
 
         # セッションリスト（Treeview）
         list_frame = ttk.Frame(top_frame)
@@ -683,9 +697,38 @@ class ClaudeCodeRecall:
         except tk.TclError:
             pass
 
+    def _schedule_auto_reload(self) -> None:
+        """自動再読み込みタイマーをスケジュールする。"""
+        # 10分 = 600,000ミリ秒
+        self.root.after(600000, self._auto_reload)
+
+    def _auto_reload(self) -> None:
+        """自動再読み込みを実行する。"""
+        # 現在の選択状態を保存
+        selection = self.session_tree.selection()
+        selected_session_id: Optional[str] = None
+        if selection and self.current_session:
+            selected_session_id = self.current_session.get("session_id")
+
+        # セッションを再読み込み
+        self._load_all_sessions()
+
+        # 選択状態を復元
+        if selected_session_id:
+            filtered = self._get_filtered_sessions()
+            for idx, session in enumerate(filtered):
+                if session.get("session_id") == selected_session_id:
+                    self.session_tree.selection_set(str(idx))
+                    self.session_tree.see(str(idx))
+                    break
+
+        # 次のタイマーをスケジュール
+        self._schedule_auto_reload()
+
     def _load_all_sessions(self) -> None:
         """全プロジェクトのセッションを読み込む。"""
         self.sessions = []
+        self.last_updated = datetime.now()
 
         if not self.projects_dir.exists():
             self._filter_sessions()
@@ -937,6 +980,11 @@ class ClaudeCodeRecall:
                 total=len(self.sessions),
             )
         )
+
+        # 最終更新日時を更新
+        if self.last_updated:
+            time_str = self.last_updated.strftime("%Y-%m-%d %H:%M")
+            self.updated_label.config(text=get_text("last_updated", time=time_str))
 
     def _filter_sessions(self) -> None:
         """検索フィルタを適用する。"""
