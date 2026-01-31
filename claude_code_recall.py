@@ -1190,7 +1190,7 @@ class ClaudeCodeRecall:
         )
 
         with tempfile.NamedTemporaryFile(
-            mode="w", suffix=".bat", delete=False, encoding="utf-8"
+            mode="w", suffix=".bat", delete=False, encoding="cp932"
         ) as f:
             f.write(batch_content)
             batch_path = f.name
