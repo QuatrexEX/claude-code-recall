@@ -10,6 +10,7 @@ License: MIT
 from __future__ import annotations
 
 import json
+import locale
 import logging
 import os
 import shutil
@@ -91,10 +92,189 @@ TRANSLATIONS = {
         "chart_prompts": "{count}",
         "last_updated": "Last updated: {time}",
     },
+    "ko": {
+        "app_title": "Claude Code Recall - 세션 기록 뷰어",
+        "search": "검색:",
+        "filter_system": "시스템 세션 제외",
+        "filter_slash": "슬래시 명령어 제외",
+        "session_count": "세션 수: {displayed} / {total}",
+        "col_project": "프로젝트",
+        "col_date": "날짜",
+        "col_first_message": "첫 번째 메시지",
+        "select_session": "세션을 선택하세요",
+        "project_label": "프로젝트: {path}\n세션 ID: {session_id}",
+        "menu_resume": "세션 재개",
+        "menu_delete": "세션 삭제",
+        "menu_copy": "복사",
+        "confirm_delete_title": "삭제 확인",
+        "confirm_delete_message": "이 세션을 삭제하시겠습니까?\n\n프로젝트: {project}\n메시지: {message}...\n\n이 작업은 취소할 수 없습니다.",
+        "delete_success_title": "삭제 완료",
+        "delete_success_message": "세션이 삭제되었습니다.",
+        "error_title": "오류",
+        "error_delete": "세션 삭제 실패:\n{error}",
+        "error_resume": "세션 재개 실패:\n{error}",
+        "slash_command_only": "(슬래시 명령어만)",
+        "user_label": "👤 사용자",
+        "assistant_label": "🤖 어시스턴트",
+        "chart_title": "최근 30일간 프롬프트 수",
+        "chart_prompts": "{count}건",
+        "last_updated": "마지막 업데이트: {time}",
+    },
+    "de": {
+        "app_title": "Claude Code Recall - Sitzungsverlauf",
+        "search": "Suche:",
+        "filter_system": "Systemsitzungen ausblenden",
+        "filter_slash": "Slash-Befehle ausblenden",
+        "session_count": "Sitzungen: {displayed} / {total}",
+        "col_project": "Projekt",
+        "col_date": "Datum",
+        "col_first_message": "Erste Nachricht",
+        "select_session": "Sitzung auswählen",
+        "project_label": "Projekt: {path}\nSitzungs-ID: {session_id}",
+        "menu_resume": "Sitzung fortsetzen",
+        "menu_delete": "Sitzung löschen",
+        "menu_copy": "Kopieren",
+        "confirm_delete_title": "Löschen bestätigen",
+        "confirm_delete_message": "Diese Sitzung löschen?\n\nProjekt: {project}\nNachricht: {message}...\n\nDiese Aktion kann nicht rückgängig gemacht werden.",
+        "delete_success_title": "Gelöscht",
+        "delete_success_message": "Sitzung erfolgreich gelöscht.",
+        "error_title": "Fehler",
+        "error_delete": "Sitzung konnte nicht gelöscht werden:\n{error}",
+        "error_resume": "Sitzung konnte nicht fortgesetzt werden:\n{error}",
+        "slash_command_only": "(Nur Slash-Befehle)",
+        "user_label": "👤 Benutzer",
+        "assistant_label": "🤖 Assistent",
+        "chart_title": "Prompts der letzten 30 Tage",
+        "chart_prompts": "{count}",
+        "last_updated": "Zuletzt aktualisiert: {time}",
+    },
+    "fr": {
+        "app_title": "Claude Code Recall - Historique des sessions",
+        "search": "Rechercher :",
+        "filter_system": "Exclure les sessions système",
+        "filter_slash": "Exclure les commandes slash",
+        "session_count": "Sessions : {displayed} / {total}",
+        "col_project": "Projet",
+        "col_date": "Date",
+        "col_first_message": "Premier message",
+        "select_session": "Sélectionnez une session",
+        "project_label": "Projet : {path}\nID de session : {session_id}",
+        "menu_resume": "Reprendre la session",
+        "menu_delete": "Supprimer la session",
+        "menu_copy": "Copier",
+        "confirm_delete_title": "Confirmer la suppression",
+        "confirm_delete_message": "Supprimer cette session ?\n\nProjet : {project}\nMessage : {message}...\n\nCette action est irréversible.",
+        "delete_success_title": "Supprimé",
+        "delete_success_message": "Session supprimée avec succès.",
+        "error_title": "Erreur",
+        "error_delete": "Échec de la suppression de la session :\n{error}",
+        "error_resume": "Échec de la reprise de la session :\n{error}",
+        "slash_command_only": "(Commandes slash uniquement)",
+        "user_label": "👤 Utilisateur",
+        "assistant_label": "🤖 Assistant",
+        "chart_title": "Prompts des 30 derniers jours",
+        "chart_prompts": "{count}",
+        "last_updated": "Dernière mise à jour : {time}",
+    },
+    "pt-BR": {
+        "app_title": "Claude Code Recall - Visualizador de Histórico de Sessões",
+        "search": "Pesquisar:",
+        "filter_system": "Excluir sessões do sistema",
+        "filter_slash": "Excluir comandos slash",
+        "session_count": "Sessões: {displayed} / {total}",
+        "col_project": "Projeto",
+        "col_date": "Data",
+        "col_first_message": "Primeira Mensagem",
+        "select_session": "Selecione uma sessão",
+        "project_label": "Projeto: {path}\nID da Sessão: {session_id}",
+        "menu_resume": "Retomar Sessão",
+        "menu_delete": "Excluir Sessão",
+        "menu_copy": "Copiar",
+        "confirm_delete_title": "Confirmar Exclusão",
+        "confirm_delete_message": "Excluir esta sessão?\n\nProjeto: {project}\nMensagem: {message}...\n\nEsta ação não pode ser desfeita.",
+        "delete_success_title": "Excluído",
+        "delete_success_message": "Sessão excluída com sucesso.",
+        "error_title": "Erro",
+        "error_delete": "Falha ao excluir sessão:\n{error}",
+        "error_resume": "Falha ao retomar sessão:\n{error}",
+        "slash_command_only": "(Apenas comandos slash)",
+        "user_label": "👤 Usuário",
+        "assistant_label": "🤖 Assistente",
+        "chart_title": "Prompts nos últimos 30 dias",
+        "chart_prompts": "{count}",
+        "last_updated": "Última atualização: {time}",
+    },
+    "es": {
+        "app_title": "Claude Code Recall - Visor de Historial de Sesiones",
+        "search": "Buscar:",
+        "filter_system": "Excluir sesiones del sistema",
+        "filter_slash": "Excluir comandos slash",
+        "session_count": "Sesiones: {displayed} / {total}",
+        "col_project": "Proyecto",
+        "col_date": "Fecha",
+        "col_first_message": "Primer Mensaje",
+        "select_session": "Seleccione una sesión",
+        "project_label": "Proyecto: {path}\nID de Sesión: {session_id}",
+        "menu_resume": "Reanudar Sesión",
+        "menu_delete": "Eliminar Sesión",
+        "menu_copy": "Copiar",
+        "confirm_delete_title": "Confirmar Eliminación",
+        "confirm_delete_message": "¿Eliminar esta sesión?\n\nProyecto: {project}\nMensaje: {message}...\n\nEsta acción no se puede deshacer.",
+        "delete_success_title": "Eliminado",
+        "delete_success_message": "Sesión eliminada correctamente.",
+        "error_title": "Error",
+        "error_delete": "Error al eliminar la sesión:\n{error}",
+        "error_resume": "Error al reanudar la sesión:\n{error}",
+        "slash_command_only": "(Solo comandos slash)",
+        "user_label": "👤 Usuario",
+        "assistant_label": "🤖 Asistente",
+        "chart_title": "Prompts en los últimos 30 días",
+        "chart_prompts": "{count}",
+        "last_updated": "Última actualización: {time}",
+    },
 }
 
-# 現在の言語（デフォルト: 日本語）
-_current_language = "ja"
+# 現在の言語（デフォルト: 英語）
+_current_language = "en"
+
+# 言語コードマッピング（OS言語 -> アプリ言語）
+_LANGUAGE_MAP = {
+    "ja": "ja",      # Japanese
+    "en": "en",      # English
+    "ko": "ko",      # Korean
+    "de": "de",      # German
+    "fr": "fr",      # French
+    "pt": "pt-BR",   # Portuguese -> Brazilian Portuguese
+    "es": "es",      # Spanish
+}
+
+
+def detect_system_language() -> str:
+    """Detect the system language and return the appropriate language code.
+
+    Returns:
+        Language code supported by this application (e.g., "ja", "en", "ko")
+    """
+    try:
+        # Get system locale
+        system_locale = locale.getdefaultlocale()[0]
+        if system_locale:
+            # Extract language code (e.g., "ja_JP" -> "ja", "pt_BR" -> "pt")
+            lang_code = system_locale.split("_")[0].lower()
+
+            # Special handling for Brazilian Portuguese
+            if system_locale.lower().startswith("pt_br"):
+                return "pt-BR"
+
+            # Map to supported language
+            if lang_code in _LANGUAGE_MAP:
+                return _LANGUAGE_MAP[lang_code]
+
+    except Exception:
+        pass
+
+    # Default to English
+    return "en"
 
 
 def get_text(key: str, **kwargs: Any) -> str:
@@ -1298,6 +1478,10 @@ class ClaudeCodeRecall:
 
 def main() -> None:
     """アプリケーションのエントリーポイント。"""
+    # Detect and set system language
+    detected_lang = detect_system_language()
+    set_language(detected_lang)
+
     root = tk.Tk()
     ClaudeCodeRecall(root)
     root.mainloop()

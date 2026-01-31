@@ -6,6 +6,8 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Mac%20%7C%20Linux-lightgrey.svg)]()
 
+日本語 | [English](README_en.md) | [한국어](README_ko.md) | [Deutsch](README_de.md) | [Français](README_fr.md) | [Português](README_pt-BR.md) | [Español](README_es.md)
+
 ## 概要
 
 Claude Code Recall は、[Claude Code](https://docs.anthropic.com/en/docs/claude-code) の全プロジェクトのセッション履歴を横断的に検索・閲覧・管理できるデスクトップアプリケーションです。
