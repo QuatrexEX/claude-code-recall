@@ -255,23 +255,39 @@ def detect_system_language() -> str:
     Returns:
         Language code supported by this application (e.g., "ja", "en", "ko")
     """
+    system_locale = None
+
     try:
-        # Get system locale
-        system_locale = locale.getdefaultlocale()[0]
-        if system_locale:
-            # Extract language code (e.g., "ja_JP" -> "ja", "pt_BR" -> "pt")
-            lang_code = system_locale.split("_")[0].lower()
+        # Try environment variables first (cross-platform)
+        for env_var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
+            env_value = os.environ.get(env_var)
+            if env_value and env_value not in ("C", "POSIX"):
+                system_locale = env_value
+                break
 
-            # Special handling for Brazilian Portuguese
-            if system_locale.lower().startswith("pt_br"):
-                return "pt-BR"
-
-            # Map to supported language
-            if lang_code in _LANGUAGE_MAP:
-                return _LANGUAGE_MAP[lang_code]
+        # Fallback: use locale.getlocale() with setlocale
+        if not system_locale:
+            locale.setlocale(locale.LC_ALL, "")
+            loc = locale.getlocale(locale.LC_MESSAGES)
+            if loc and loc[0]:
+                system_locale = loc[0]
 
     except Exception:
         pass
+
+    if system_locale:
+        # Extract language code (e.g., "ja_JP" -> "ja", "pt_BR.UTF-8" -> "pt")
+        # Remove encoding suffix if present
+        system_locale = system_locale.split(".")[0]
+        lang_code = system_locale.split("_")[0].lower()
+
+        # Special handling for Brazilian Portuguese
+        if system_locale.lower().startswith("pt_br"):
+            return "pt-BR"
+
+        # Map to supported language
+        if lang_code in _LANGUAGE_MAP:
+            return _LANGUAGE_MAP[lang_code]
 
     # Default to English
     return "en"
