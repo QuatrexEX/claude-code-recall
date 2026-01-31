@@ -249,16 +249,60 @@ _LANGUAGE_MAP = {
 }
 
 
+def _get_windows_language() -> Optional[str]:
+    """Get language code on Windows using Windows API.
+
+    Returns:
+        Language code (e.g., "ja", "en") or None if detection fails
+    """
+    if sys.platform != "win32":
+        return None
+
+    try:
+        import ctypes
+
+        # Windows language ID to language code mapping (primary language only)
+        # Primary language ID is the lower 10 bits of LANGID
+        WINDOWS_LANG_MAP = {
+            0x11: "ja",     # Japanese
+            0x09: "en",     # English
+            0x12: "ko",     # Korean
+            0x07: "de",     # German
+            0x0C: "fr",     # French
+            0x16: "pt-BR",  # Portuguese (includes Brazil)
+            0x0A: "es",     # Spanish
+        }
+
+        # Get user's UI language
+        kernel32 = ctypes.windll.kernel32
+        lang_id = kernel32.GetUserDefaultUILanguage()
+
+        # Extract primary language ID (lower 10 bits)
+        primary_lang = lang_id & 0x3FF
+
+        return WINDOWS_LANG_MAP.get(primary_lang)
+
+    except Exception:
+        return None
+
+
 def detect_system_language() -> str:
     """Detect the system language and return the appropriate language code.
 
     Returns:
         Language code supported by this application (e.g., "ja", "en", "ko")
     """
+    # Windows: use Windows API
+    if sys.platform == "win32":
+        win_lang = _get_windows_language()
+        if win_lang:
+            return win_lang
+
+    # Unix/Mac: try environment variables and locale
     system_locale = None
 
     try:
-        # Try environment variables first (cross-platform)
+        # Try environment variables (Unix/Mac)
         for env_var in ("LC_ALL", "LC_MESSAGES", "LANG", "LANGUAGE"):
             env_value = os.environ.get(env_var)
             if env_value and env_value not in ("C", "POSIX"):
@@ -268,7 +312,7 @@ def detect_system_language() -> str:
         # Fallback: use locale.getlocale() with setlocale
         if not system_locale:
             locale.setlocale(locale.LC_ALL, "")
-            loc = locale.getlocale(locale.LC_MESSAGES)
+            loc = locale.getlocale()
             if loc and loc[0]:
                 system_locale = loc[0]
 
