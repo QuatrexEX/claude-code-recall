@@ -9,10 +9,12 @@ License: MIT
 
 from __future__ import annotations
 
+import atexit
 import json
 import locale
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import sys
@@ -30,6 +32,28 @@ from typing import Any, Optional
 APP_NAME = "Claude Code Recall"
 APP_VERSION = "1.1.0"
 DEFAULT_WINDOW_SIZE = "1200x800"
+
+# Colors
+COLOR_TEXT_MUTED = "#666666"
+COLOR_TEXT_DARK = "#333333"
+COLOR_BAR_NORMAL = "#4a90d9"
+COLOR_BAR_HIGHLIGHT = "#ff6600"
+COLOR_BAR_ZERO = "#e0e0e0"
+COLOR_BG_LIGHT = "#f8f8f8"
+COLOR_USER = "#0066cc"
+COLOR_ASSISTANT = "#009933"
+COLOR_SEPARATOR = "#cccccc"
+
+# Fonts
+FONT_SMALL = ("", 8)
+FONT_XSMALL = ("", 7)
+FONT_MEDIUM = ("", 10, "bold")
+FONT_MONO = ("Consolas", 10)
+FONT_MONO_BOLD = ("Consolas", 10, "bold")
+FONT_MONO_SMALL = ("Consolas", 9)
+
+# Auto-reload interval (10 minutes in milliseconds)
+AUTO_RELOAD_INTERVAL_MS = 600000
 
 # ============================================================================
 # 多言語対応（i18n）
@@ -401,10 +425,10 @@ def is_safe_path(base_path: Path, target_path: Path) -> bool:
         パスが安全な場合True
     """
     try:
-        # 絶対パスに変換して比較
+        # 絶対パスに変換して比較（is_relative_to で正確に判定）
         base_resolved = base_path.resolve()
         target_resolved = target_path.resolve()
-        return str(target_resolved).startswith(str(base_resolved))
+        return target_resolved.is_relative_to(base_resolved)
     except (OSError, ValueError):
         return False
 
@@ -467,6 +491,7 @@ class ClaudeCodeRecall:
         # データ
         self.sessions: list[dict[str, Any]] = []
         self.current_session: Optional[dict[str, Any]] = None
+        self._cached_filtered_sessions: Optional[list[dict[str, Any]]] = None
 
         # フィルター設定
         self.filter_system_sessions = tk.BooleanVar(value=True)
@@ -480,16 +505,20 @@ class ClaudeCodeRecall:
         # 最終更新日時
         self.last_updated: Optional[datetime] = None
 
+        # ログ設定（セッション読み込み前に初期化）
+        logging.basicConfig(level=logging.WARNING)
+        self.logger = logging.getLogger(__name__)
+
+        # 一時ファイルクリーンアップ用リスト
+        self._temp_files: list[str] = []
+        atexit.register(self._cleanup_temp_files)
+
         # UI構築
         self._setup_ui()
         self._setup_text_context_menu()
 
         # セッション読み込み
         self._load_all_sessions()
-
-        # ログ設定
-        logging.basicConfig(level=logging.WARNING)
-        self.logger = logging.getLogger(__name__)
 
         # 自動再読み込みタイマー開始（10分間隔）
         self._schedule_auto_reload()
@@ -547,7 +576,7 @@ class ClaudeCodeRecall:
         self.count_label = ttk.Label(status_frame, text="")
         self.count_label.pack(side=tk.LEFT)
 
-        self.updated_label = ttk.Label(status_frame, text="", foreground="#666666")
+        self.updated_label = ttk.Label(status_frame, text="", foreground=COLOR_TEXT_MUTED)
         self.updated_label.pack(side=tk.RIGHT)
 
         # セッションリスト（Treeview）
@@ -604,7 +633,7 @@ class ClaudeCodeRecall:
         self.chart_canvas = tk.Canvas(
             chart_frame,
             height=120,
-            bg="#f8f8f8",
+            bg=COLOR_BG_LIGHT,
             highlightthickness=0,
         )
         self.chart_canvas.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -628,8 +657,10 @@ class ClaudeCodeRecall:
             date_str = date.strftime("%Y-%m-%d")
             counts[date_str] = 0
 
-        # Count user prompts (filtered)
-        filtered = self._get_filtered_sessions()
+        # Count user prompts (use cache if available)
+        filtered = getattr(self, "_cached_filtered_sessions", None)
+        if filtered is None:
+            filtered = self._get_filtered_sessions()
         for session in filtered:
             messages = session.get("messages", [])
             for msg in messages:
@@ -642,7 +673,7 @@ class ClaudeCodeRecall:
 
                 ts = msg.get("timestamp")
                 if ts:
-                    msg_date = self._timestamp_to_date(ts)
+                    msg_date = self._to_local_datetime(ts)
                     if msg_date:
                         date_str = msg_date.strftime("%Y-%m-%d")
                         if date_str in counts:
@@ -650,22 +681,24 @@ class ClaudeCodeRecall:
 
         return counts
 
-    def _timestamp_to_date(self, ts: Any) -> Optional[datetime]:
-        """タイムスタンプを日付に変換する。
+    @staticmethod
+    def _to_local_datetime(ts: Any) -> Optional[datetime]:
+        """タイムスタンプをローカルタイムゾーンのdatetimeに変換する。
 
         Args:
-            ts: タイムスタンプ値
+            ts: タイムスタンプ値（ISO文字列またはUnixミリ秒）
 
         Returns:
-            datetime オブジェクト、または None
+            ローカルタイムゾーンのnaive datetime、または None
         """
+        if ts is None:
+            return None
         try:
             if isinstance(ts, str):
                 dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
                 return dt_utc.astimezone().replace(tzinfo=None)
             elif isinstance(ts, (int, float)):
-                dt_utc = datetime.utcfromtimestamp(ts / 1000)
-                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
+                dt_aware = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
                 return dt_aware.astimezone().replace(tzinfo=None)
         except (ValueError, OSError):
             pass
@@ -718,16 +751,16 @@ class ClaudeCodeRecall:
             margin_top,
             text=str(max_count),
             anchor="e",
-            font=("", 8),
-            fill="#666666",
+            font=FONT_SMALL,
+            fill=COLOR_TEXT_MUTED,
         )
         self.chart_canvas.create_text(
             margin_left - 5,
             margin_top + chart_height,
             text="0",
             anchor="e",
-            font=("", 8),
-            fill="#666666",
+            font=FONT_SMALL,
+            fill=COLOR_TEXT_MUTED,
         )
 
         # Draw bars
@@ -742,11 +775,11 @@ class ClaudeCodeRecall:
 
             # Determine color
             if self.selected_date == date_str:
-                fill_color = "#ff6600"  # Highlight color (orange)
+                fill_color = COLOR_BAR_HIGHLIGHT
             elif count > 0:
-                fill_color = "#4a90d9"  # Normal bar color (blue)
+                fill_color = COLOR_BAR_NORMAL
             else:
-                fill_color = "#e0e0e0"  # Zero count color (light gray)
+                fill_color = COLOR_BAR_ZERO
 
             bar_id = self.chart_canvas.create_rectangle(
                 x1, y1, x2, y2,
@@ -776,8 +809,8 @@ class ClaudeCodeRecall:
                 self.chart_canvas.create_text(
                     x, y,
                     text=label,
-                    font=("", 7),
-                    fill="#666666",
+                    font=FONT_XSMALL,
+                    fill=COLOR_TEXT_MUTED,
                 )
 
     def _show_chart_tooltip(self, event: tk.Event, date_str: str, count: int) -> None:
@@ -801,7 +834,7 @@ class ClaudeCodeRecall:
         # Background
         bbox_id = self.chart_canvas.create_rectangle(
             x - 40, y - 10, x + 40, y + 10,
-            fill="#333333",
+            fill=COLOR_TEXT_DARK,
             outline="",
             tags="tooltip",
         )
@@ -809,7 +842,7 @@ class ClaudeCodeRecall:
             x, y,
             text=text,
             fill="white",
-            font=("", 8),
+            font=FONT_SMALL,
             tags="tooltip",
         )
 
@@ -856,13 +889,13 @@ class ClaudeCodeRecall:
         if old_date and old_date in self.chart_bars:
             bar_id = self.chart_bars[old_date]
             count = counts.get(old_date, 0)
-            color = "#4a90d9" if count > 0 else "#e0e0e0"
+            color = COLOR_BAR_NORMAL if count > 0 else COLOR_BAR_ZERO
             self.chart_canvas.itemconfig(bar_id, fill=color)
 
         # Set new highlight
         if new_selected_date and new_selected_date in self.chart_bars:
             bar_id = self.chart_bars[new_selected_date]
-            self.chart_canvas.itemconfig(bar_id, fill="#ff6600")
+            self.chart_canvas.itemconfig(bar_id, fill=COLOR_BAR_HIGHLIGHT)
 
     def _setup_right_panel(self) -> None:
         """右パネル（会話表示）を構築する。"""
@@ -871,7 +904,7 @@ class ClaudeCodeRecall:
 
         # セッション情報
         self.session_info_label = ttk.Label(
-            right_frame, text=get_text("select_session"), font=("", 10, "bold")
+            right_frame, text=get_text("select_session"), font=FONT_MEDIUM
         )
         self.session_info_label.pack(anchor=tk.W, pady=(0, 5))
 
@@ -882,7 +915,7 @@ class ClaudeCodeRecall:
         self.conversation_text = tk.Text(
             text_frame,
             wrap=tk.WORD,
-            font=("Consolas", 10),
+            font=FONT_MONO,
             state=tk.DISABLED,
             padx=10,
             pady=10,
@@ -898,13 +931,13 @@ class ClaudeCodeRecall:
 
         # タグ設定（色分け）
         self.conversation_text.tag_configure(
-            "user", foreground="#0066cc", font=("Consolas", 10, "bold")
+            "user", foreground=COLOR_USER, font=FONT_MONO_BOLD
         )
-        self.conversation_text.tag_configure("assistant", foreground="#009933")
+        self.conversation_text.tag_configure("assistant", foreground=COLOR_ASSISTANT)
         self.conversation_text.tag_configure(
-            "timestamp", foreground="#666666", font=("Consolas", 9)
+            "timestamp", foreground=COLOR_TEXT_MUTED, font=FONT_MONO_SMALL
         )
-        self.conversation_text.tag_configure("separator", foreground="#cccccc")
+        self.conversation_text.tag_configure("separator", foreground=COLOR_SEPARATOR)
 
     def _setup_text_context_menu(self) -> None:
         """テキスト表示エリアの右クリックメニューを設定する。"""
@@ -939,31 +972,42 @@ class ClaudeCodeRecall:
 
     def _schedule_auto_reload(self) -> None:
         """自動再読み込みタイマーをスケジュールする。"""
-        # 10分 = 600,000ミリ秒
-        self.root.after(600000, self._auto_reload)
+        self._auto_reload_id = self.root.after(
+            AUTO_RELOAD_INTERVAL_MS, self._auto_reload
+        )
+
+    def _cancel_auto_reload(self) -> None:
+        """自動再読み込みタイマーをキャンセルする。"""
+        if hasattr(self, "_auto_reload_id") and self._auto_reload_id is not None:
+            self.root.after_cancel(self._auto_reload_id)
+            self._auto_reload_id = None
 
     def _auto_reload(self) -> None:
         """自動再読み込みを実行する。"""
-        # 現在の選択状態を保存
-        selection = self.session_tree.selection()
-        selected_session_id: Optional[str] = None
-        if selection and self.current_session:
-            selected_session_id = self.current_session.get("session_id")
+        try:
+            # 現在の選択状態を保存
+            selection = self.session_tree.selection()
+            selected_session_id: Optional[str] = None
+            if selection and self.current_session:
+                selected_session_id = self.current_session.get("session_id")
 
-        # セッションを再読み込み
-        self._load_all_sessions()
+            # セッションを再読み込み
+            self._load_all_sessions()
 
-        # 選択状態を復元
-        if selected_session_id:
-            filtered = self._get_filtered_sessions()
-            for idx, session in enumerate(filtered):
-                if session.get("session_id") == selected_session_id:
-                    self.session_tree.selection_set(str(idx))
-                    self.session_tree.see(str(idx))
-                    break
+            # 選択状態を復元
+            if selected_session_id:
+                filtered = self._get_filtered_sessions()
+                for idx, session in enumerate(filtered):
+                    if session.get("session_id") == selected_session_id:
+                        self.session_tree.selection_set(str(idx))
+                        self.session_tree.see(str(idx))
+                        break
 
-        # 次のタイマーをスケジュール
-        self._schedule_auto_reload()
+            # 次のタイマーをスケジュール
+            self._schedule_auto_reload()
+        except tk.TclError:
+            # Window already destroyed
+            pass
 
     def _load_all_sessions(self) -> None:
         """全プロジェクトのセッションを読み込む。"""
@@ -975,31 +1019,34 @@ class ClaudeCodeRecall:
             return
 
         for project_dir in self.projects_dir.iterdir():
-            if not project_dir.is_dir():
-                continue
-
-            # セキュリティチェック
-            if not is_safe_path(self.projects_dir, project_dir):
-                continue
-
-            # プロジェクト名をデコード（フォールバック用）
-            project_name_fallback = project_dir.name.replace("--", ":/", 1).replace(
-                "-", "/"
-            )
-
-            for session_file in project_dir.glob("*.jsonl"):
-                if not session_file.is_file():
+            try:
+                if not project_dir.is_dir():
                     continue
 
                 # セキュリティチェック
-                if not is_safe_path(project_dir, session_file):
+                if not is_safe_path(self.projects_dir, project_dir):
                     continue
 
-                session_info = self._parse_session_file(
-                    session_file, project_name_fallback
-                )
-                if session_info:
-                    self.sessions.append(session_info)
+                # プロジェクト名をデコード（フォールバック用）
+                project_name_fallback = project_dir.name.replace(
+                    "--", ":/", 1
+                ).replace("-", "/")
+
+                for session_file in project_dir.glob("*.jsonl"):
+                    if not session_file.is_file():
+                        continue
+
+                    # セキュリティチェック
+                    if not is_safe_path(project_dir, session_file):
+                        continue
+
+                    session_info = self._parse_session_file(
+                        session_file, project_name_fallback
+                    )
+                    if session_info:
+                        self.sessions.append(session_info)
+            except (OSError, PermissionError) as e:
+                self.logger.warning(f"Skipping directory {project_dir}: {e}")
 
         # 日時でソート（新しい順）
         self.sessions.sort(key=lambda x: x["timestamp"], reverse=True)
@@ -1086,7 +1133,7 @@ class ClaudeCodeRecall:
     def _parse_timestamp(
         self, ts: Any, current_latest: Optional[datetime]
     ) -> Optional[datetime]:
-        """タイムスタンプをパースしてローカルタイムゾーンに変換する。
+        """タイムスタンプをパースし、最新のものを返す。
 
         Args:
             ts: タイムスタンプ値
@@ -1095,28 +1142,9 @@ class ClaudeCodeRecall:
         Returns:
             更新されたタイムスタンプ（ローカルタイムゾーン）
         """
-        if ts is None:
-            return current_latest
-
-        try:
-            if isinstance(ts, str):
-                # ISO format (UTC) -> local timezone
-                dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-                dt = dt_utc.astimezone().replace(tzinfo=None)
-            elif isinstance(ts, (int, float)):
-                # Unix timestamp in milliseconds (UTC) -> local timezone
-                dt_utc = datetime.utcfromtimestamp(ts / 1000)
-                # Convert UTC naive to aware, then to local
-                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
-                dt = dt_aware.astimezone().replace(tzinfo=None)
-            else:
-                return current_latest
-
-            if current_latest is None or dt > current_latest:
-                return dt
-        except (ValueError, OSError):
-            pass
-
+        dt = self._to_local_datetime(ts)
+        if dt is not None and (current_latest is None or dt > current_latest):
+            return dt
         return current_latest
 
     def _extract_message(self, data: dict[str, Any]) -> Optional[dict[str, Any]]:
@@ -1228,8 +1256,8 @@ class ClaudeCodeRecall:
 
     def _filter_sessions(self) -> None:
         """検索フィルタを適用する。"""
-        filtered = self._get_filtered_sessions()
-        self._populate_session_list(filtered)
+        self._cached_filtered_sessions = self._get_filtered_sessions()
+        self._populate_session_list(self._cached_filtered_sessions)
         self._draw_chart()
 
     def _on_slash_filter_change(self) -> None:
@@ -1266,25 +1294,34 @@ class ClaudeCodeRecall:
 
         return filtered
 
+    def _get_selected_session(self) -> Optional[dict[str, Any]]:
+        """Treeviewで選択されたセッションを取得する。
+
+        Returns:
+            選択されたセッション情報、または None
+        """
+        selection = self.session_tree.selection()
+        if not selection:
+            return None
+        try:
+            idx = int(selection[0])
+            filtered = self._get_filtered_sessions()
+            if idx < len(filtered):
+                return filtered[idx]
+        except (ValueError, IndexError):
+            pass
+        return None
+
     def _on_session_select(self, event: tk.Event) -> None:
         """セッション選択時の処理。
 
         Args:
             event: イベントオブジェクト
         """
-        selection = self.session_tree.selection()
-        if not selection:
-            return
-
-        try:
-            idx = int(selection[0])
-            filtered = self._get_filtered_sessions()
-            if idx < len(filtered):
-                session = filtered[idx]
-                self._display_conversation(session)
-                self._update_chart_highlight(session)
-        except (ValueError, IndexError):
-            pass
+        session = self._get_selected_session()
+        if session:
+            self._display_conversation(session)
+            self._update_chart_highlight(session)
 
     def _on_session_right_click(self, event: tk.Event) -> None:
         """セッションリスト右クリック時の処理。
@@ -1314,17 +1351,18 @@ class ClaudeCodeRecall:
         )
 
         self.conversation_text.config(state=tk.NORMAL)
-        self.conversation_text.delete(1.0, tk.END)
+        try:
+            self.conversation_text.delete(1.0, tk.END)
 
-        exclude_slash = self.filter_slash_commands.get()
+            exclude_slash = self.filter_slash_commands.get()
 
-        for msg in session["messages"]:
-            if exclude_slash and msg.get("is_slash_command", False):
-                continue
+            for msg in session["messages"]:
+                if exclude_slash and msg.get("is_slash_command", False):
+                    continue
 
-            self._render_message(msg)
-
-        self.conversation_text.config(state=tk.DISABLED)
+                self._render_message(msg)
+        finally:
+            self.conversation_text.config(state=tk.DISABLED)
         self.conversation_text.see(1.0)
 
     def _render_message(self, msg: dict[str, Any]) -> None:
@@ -1371,36 +1409,18 @@ class ClaudeCodeRecall:
         """
         if not timestamp:
             return ""
-
-        try:
-            if isinstance(timestamp, str):
-                # ISO format (UTC) -> local timezone
-                dt_utc = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
-                dt = dt_utc.astimezone().replace(tzinfo=None)
-            elif isinstance(timestamp, (int, float)):
-                # Unix timestamp in milliseconds (UTC) -> local timezone
-                dt_utc = datetime.utcfromtimestamp(timestamp / 1000)
-                dt_aware = dt_utc.replace(tzinfo=timezone.utc)
-                dt = dt_aware.astimezone().replace(tzinfo=None)
-            else:
-                return ""
+        dt = self._to_local_datetime(timestamp)
+        if dt is not None:
             return dt.strftime("%Y-%m-%d %H:%M:%S")
-        except (ValueError, OSError):
-            return str(timestamp) if timestamp else ""
+        return str(timestamp) if timestamp else ""
 
     def _resume_selected_session(self) -> None:
         """選択されたセッションを再開する。"""
-        selection = self.session_tree.selection()
-        if not selection:
+        session = self._get_selected_session()
+        if not session:
             return
 
         try:
-            idx = int(selection[0])
-            filtered = self._get_filtered_sessions()
-            if idx >= len(filtered):
-                return
-
-            session = filtered[idx]
             session_id = session["session_id"]
             project_path = session["project_name"]
 
@@ -1415,6 +1435,15 @@ class ClaudeCodeRecall:
                 get_text("error_title"), get_text("error_resume", error=str(e))
             )
 
+    def _cleanup_temp_files(self) -> None:
+        """一時ファイルをクリーンアップする。"""
+        for path in self._temp_files:
+            try:
+                os.unlink(path)
+            except OSError:
+                pass
+        self._temp_files.clear()
+
     def _resume_session_windows(self, project_path: str, session_id: str) -> None:
         """Windowsでセッションを再開する。
 
@@ -1422,11 +1451,16 @@ class ClaudeCodeRecall:
             project_path: プロジェクトパス
             session_id: セッションID
         """
+        # Escape double quotes in project_path to prevent command injection
+        safe_path = project_path.replace('"', '""')
+        # session_id should be a UUID-like string; validate it
+        safe_session_id = session_id.replace('"', "").replace("&", "").replace("|", "")
+
         batch_content = (
-            f'@echo off\n'
-            f'cd /d "{project_path}"\n'
-            f'claude --resume {session_id}\n'
-            f'pause'
+            f"@echo off\n"
+            f'cd /d "{safe_path}"\n'
+            f"claude --resume {safe_session_id}\n"
+            f"pause"
         )
 
         with tempfile.NamedTemporaryFile(
@@ -1435,6 +1469,7 @@ class ClaudeCodeRecall:
             f.write(batch_content)
             batch_path = f.name
 
+        self._temp_files.append(batch_path)
         subprocess.Popen(f'start cmd /k "{batch_path}"', shell=True)
 
     def _resume_session_unix(self, project_path: str, session_id: str) -> None:
@@ -1444,14 +1479,16 @@ class ClaudeCodeRecall:
             project_path: プロジェクトパス
             session_id: セッションID
         """
+        safe_path = shlex.quote(project_path)
+        safe_session_id = shlex.quote(session_id)
         script_content = (
-            f'cd "{project_path}" && claude --resume {session_id}; exec bash'
+            f"cd {safe_path} && claude --resume {safe_session_id}; exec bash"
         )
 
         # 一般的なターミナルエミュレータを試す
         terminals = [
             ["gnome-terminal", "--", "bash", "-c", script_content],
-            ["xterm", "-e", f"bash -c '{script_content}'"],
+            ["xterm", "-e", f"bash -c {shlex.quote(script_content)}"],
             ["open", "-a", "Terminal", project_path],  # macOS
         ]
 
@@ -1466,17 +1503,11 @@ class ClaudeCodeRecall:
 
     def _delete_selected_session(self) -> None:
         """選択されたセッションを削除する。"""
-        selection = self.session_tree.selection()
-        if not selection:
+        session = self._get_selected_session()
+        if not session:
             return
 
         try:
-            idx = int(selection[0])
-            filtered = self._get_filtered_sessions()
-            if idx >= len(filtered):
-                return
-
-            session = filtered[idx]
             file_path: Path = session["file_path"]
             first_msg = truncate_text(session["first_message"], 50)
 
