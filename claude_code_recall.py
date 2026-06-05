@@ -223,6 +223,32 @@ def detect_system_language() -> str:
 
 
 # ============================================================================
+# タイムゾーン（OSのタイムゾーン設定を起動時にキャプチャ）
+# ============================================================================
+#
+# datetime.astimezone() は引数なしでもOSのタイムゾーンを使うが、ロケール経由で
+# Pythonが TZ を誤推論するリスクを避けるため、起動時にOSのタイムゾーンを取得して
+# 固定化する。これにより表示言語の変更とタイムゾーンは完全に独立する。
+
+def _get_local_timezone() -> Optional[Any]:
+    """OSのタイムゾーンを取得する（表示言語とは無関係）。"""
+    try:
+        return datetime.now(timezone.utc).astimezone().tzinfo
+    except Exception:
+        return None
+
+
+LOCAL_TZ = _get_local_timezone()
+
+
+def now_local() -> datetime:
+    """OSタイムゾーンでの現在時刻（naive）を返す。"""
+    if LOCAL_TZ is not None:
+        return datetime.now(LOCAL_TZ).replace(tzinfo=None)
+    return datetime.now()
+
+
+# ============================================================================
 # ユーティリティ関数
 # ============================================================================
 
@@ -261,19 +287,25 @@ def get_short_project_name(full_path: str, depth: int = SHORT_PROJECT_DEPTH) -> 
 
 
 def to_local_datetime(ts: Any) -> Optional[datetime]:
-    """ISO文字列またはUnixミリ秒をローカルタイムゾーンのnaive datetimeに変換。"""
+    """ISO文字列またはUnixミリ秒を、OSタイムゾーンのnaive datetimeに変換。
+
+    LOCAL_TZ (起動時にキャプチャしたOSのタイムゾーン) を使うため、
+    表示言語やロケール変更の影響を受けない。
+    """
     if ts is None:
         return None
     try:
         if isinstance(ts, str):
             dt_utc = datetime.fromisoformat(ts.replace("Z", "+00:00"))
-            return dt_utc.astimezone().replace(tzinfo=None)
-        if isinstance(ts, (int, float)):
-            dt_aware = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
-            return dt_aware.astimezone().replace(tzinfo=None)
+        elif isinstance(ts, (int, float)):
+            dt_utc = datetime.fromtimestamp(ts / 1000, tz=timezone.utc)
+        else:
+            return None
+        if LOCAL_TZ is not None:
+            return dt_utc.astimezone(LOCAL_TZ).replace(tzinfo=None)
+        return dt_utc.astimezone().replace(tzinfo=None)
     except (ValueError, OSError):
-        pass
-    return None
+        return None
 
 
 # ============================================================================
@@ -517,7 +549,7 @@ class ClaudeCodeRecall:
 
     def _load_all_sessions(self) -> None:
         self.sessions = []
-        self.last_updated = datetime.now()
+        self.last_updated = now_local()
 
         if not self.projects_dir.exists():
             self._filter_sessions()
@@ -711,7 +743,7 @@ class ClaudeCodeRecall:
     def _compute_prompt_counts_by_date(self) -> dict[str, int]:
         """過去 CHART_DAYS 日間のユーザープロンプト数を日別集計。"""
         counts: dict[str, int] = {}
-        today = datetime.now().date()
+        today = now_local().date()
         exclude_slash = self.filter_slash_commands.get()
 
         for i in range(CHART_DAYS):
