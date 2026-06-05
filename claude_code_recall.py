@@ -226,12 +226,65 @@ def detect_system_language() -> str:
 # タイムゾーン（OSのタイムゾーン設定を起動時にキャプチャ）
 # ============================================================================
 #
-# datetime.astimezone() は引数なしでもOSのタイムゾーンを使うが、ロケール経由で
-# Pythonが TZ を誤推論するリスクを避けるため、起動時にOSのタイムゾーンを取得して
-# 固定化する。これにより表示言語の変更とタイムゾーンは完全に独立する。
+# Windowsでは TZ=Asia/Tokyo のような IANA 形式の環境変数がセットされていると
+# Pythonの C ランタイムが解釈に失敗し、datetime.astimezone() / time.timezone が
+# 誤った値を返す（例: TZ=Asia/Tokyo の下で time.timezone=0 になる）。
+# そのため Windows では GetTimeZoneInformation API でOS設定から直接取得する。
+
+def _get_windows_local_timezone() -> Optional[Any]:
+    """Windows API でOSのタイムゾーン設定から UTC オフセットを取得する。
+
+    GetTimeZoneInformation の Bias は「UTC = ローカル + Bias (分)」の符号。
+    日本 (UTC+9) では Bias=-540 となり、UTCオフセットは +540 分。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        class _SYSTEMTIME(ctypes.Structure):
+            _fields_ = [
+                ("wYear", wintypes.WORD),
+                ("wMonth", wintypes.WORD),
+                ("wDayOfWeek", wintypes.WORD),
+                ("wDay", wintypes.WORD),
+                ("wHour", wintypes.WORD),
+                ("wMinute", wintypes.WORD),
+                ("wSecond", wintypes.WORD),
+                ("wMilliseconds", wintypes.WORD),
+            ]
+
+        class _TZI(ctypes.Structure):
+            _fields_ = [
+                ("Bias", ctypes.c_long),
+                ("StandardName", ctypes.c_wchar * 32),
+                ("StandardDate", _SYSTEMTIME),
+                ("StandardBias", ctypes.c_long),
+                ("DaylightName", ctypes.c_wchar * 32),
+                ("DaylightDate", _SYSTEMTIME),
+                ("DaylightBias", ctypes.c_long),
+            ]
+
+        tzi = _TZI()
+        # 戻り値: 0=unknown, 1=standard, 2=daylight
+        result = ctypes.windll.kernel32.GetTimeZoneInformation(ctypes.byref(tzi))
+        extra = tzi.DaylightBias if result == 2 else tzi.StandardBias
+        total_bias_minutes = tzi.Bias + extra
+        return timezone(timedelta(minutes=-total_bias_minutes))
+    except Exception:
+        return None
+
 
 def _get_local_timezone() -> Optional[Any]:
-    """OSのタイムゾーンを取得する（表示言語とは無関係）。"""
+    """OSのタイムゾーンを取得する（表示言語とは無関係）。
+
+    Windows では TZ 環境変数によるノイズを避けるため Windows API を優先する。
+    取得失敗時およびPOSIX系では datetime.astimezone() にフォールバック。
+    """
+    win_tz = _get_windows_local_timezone()
+    if win_tz is not None:
+        return win_tz
     try:
         return datetime.now(timezone.utc).astimezone().tzinfo
     except Exception:
