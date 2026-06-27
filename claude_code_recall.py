@@ -21,7 +21,7 @@ import subprocess
 import sys
 import tempfile
 import tkinter as tk
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone, tzinfo
 from functools import lru_cache
 from pathlib import Path
 from tkinter import messagebox, ttk
@@ -69,6 +69,13 @@ CHART_X_LABEL_TARGETS = 5
 CHART_BAR_MIN_WIDTH = 2
 CHART_BAR_GAP = 1
 
+# Chart tooltip
+TOOLTIP_OFFSET_Y = 20
+TOOLTIP_HALF_WIDTH = 40
+TOOLTIP_HALF_HEIGHT = 10
+TOOLTIP_PAD_X = 5
+TOOLTIP_PAD_Y = 3
+
 # Display
 FIRST_MESSAGE_DISPLAY_LENGTH = 50
 SHORT_PROJECT_DEPTH = 2
@@ -106,6 +113,7 @@ class SessionMessage(TypedDict):
     type: str
     content: str
     timestamp: Any
+    timestamp_local: Optional[datetime]
     is_meta: bool
     is_slash_command: bool
 
@@ -231,7 +239,7 @@ def detect_system_language() -> str:
 # 誤った値を返す（例: TZ=Asia/Tokyo の下で time.timezone=0 になる）。
 # そのため Windows では GetTimeZoneInformation API でOS設定から直接取得する。
 
-def _get_windows_local_timezone() -> Optional[Any]:
+def _get_windows_local_timezone() -> Optional[tzinfo]:
     """Windows API でOSのタイムゾーン設定から UTC オフセットを取得する。
 
     GetTimeZoneInformation の Bias は「UTC = ローカル + Bias (分)」の符号。
@@ -276,7 +284,7 @@ def _get_windows_local_timezone() -> Optional[Any]:
         return None
 
 
-def _get_local_timezone() -> Optional[Any]:
+def _get_local_timezone() -> Optional[tzinfo]:
     """OSのタイムゾーンを取得する（表示言語とは無関係）。
 
     Windows では TZ 環境変数によるノイズを避けるため Windows API を優先する。
@@ -291,7 +299,7 @@ def _get_local_timezone() -> Optional[Any]:
         return None
 
 
-LOCAL_TZ = _get_local_timezone()
+LOCAL_TZ: Optional[tzinfo] = _get_local_timezone()
 
 
 def now_local() -> datetime:
@@ -677,7 +685,7 @@ class ClaudeCodeRecall:
         latest_timestamp: Optional[datetime] = None
         actual_cwd: Optional[str] = None
 
-        with open(file_path, "r", encoding="utf-8") as f:
+        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
             for line in f:
                 line = line.strip()
                 if not line:
@@ -747,10 +755,12 @@ class ClaudeCodeRecall:
             or stripped.startswith("<local-command-caveat>")
         )
 
+        raw_timestamp = data.get("timestamp")
         return {
             "type": msg_type,
             "content": content,
-            "timestamp": data.get("timestamp"),
+            "timestamp": raw_timestamp,
+            "timestamp_local": to_local_datetime(raw_timestamp),
             "is_meta": is_meta,
             "is_slash_command": is_slash_command,
         }
@@ -809,12 +819,17 @@ class ClaudeCodeRecall:
                     continue
                 if exclude_slash and msg["is_slash_command"]:
                     continue
-                msg_date = to_local_datetime(msg["timestamp"])
+                msg_date = msg["timestamp_local"]
                 if msg_date:
                     date_str = msg_date.strftime("%Y-%m-%d")
                     if date_str in counts:
                         counts[date_str] += 1
         return counts
+
+    @staticmethod
+    def _short_first_message(session: SessionInfo) -> str:
+        """セッションの最初のメッセージを一覧表示用に切り詰める。"""
+        return truncate_text(session["first_message"], FIRST_MESSAGE_DISPLAY_LENGTH)
 
     def _populate_session_list(self) -> None:
         self.session_tree.delete(*self.session_tree.get_children())
@@ -825,9 +840,7 @@ class ClaudeCodeRecall:
                 date_str = session["timestamp"].strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = "-"
-            first_msg = truncate_text(
-                session["first_message"], FIRST_MESSAGE_DISPLAY_LENGTH
-            )
+            first_msg = self._short_first_message(session)
             self.session_tree.insert(
                 "", tk.END, iid=str(idx), values=(project, date_str, first_msg)
             )
@@ -902,7 +915,7 @@ class ClaudeCodeRecall:
     def _render_message(self, msg: SessionMessage) -> None:
         msg_type = msg["type"]
         content = msg["content"]
-        ts_str = self._format_timestamp(msg.get("timestamp"))
+        ts_str = self._format_timestamp(msg)
 
         label_key = "user_label" if msg_type == "user" else "assistant_label"
         tag = "user" if msg_type == "user" else "assistant"
@@ -917,13 +930,12 @@ class ClaudeCodeRecall:
         )
 
     @staticmethod
-    def _format_timestamp(timestamp: Any) -> str:
-        if not timestamp:
-            return ""
-        dt = to_local_datetime(timestamp)
+    def _format_timestamp(msg: SessionMessage) -> str:
+        dt = msg.get("timestamp_local")
         if dt is not None:
             return dt.strftime("%Y-%m-%d %H:%M:%S")
-        return str(timestamp)
+        raw = msg.get("timestamp")
+        return str(raw) if raw else ""
 
     # ------------------------------------------------------------------
     # チャート描画
@@ -949,9 +961,10 @@ class ClaudeCodeRecall:
             return
 
         max_count = max(max(counts.values(), default=0), 1)
+        sorted_dates = sorted(counts.keys())
         self._draw_chart_axis(layout, max_count)
-        self._draw_chart_bars(counts, layout, max_count)
-        self._draw_chart_x_labels(counts, layout)
+        self._draw_chart_bars(counts, sorted_dates, layout, max_count)
+        self._draw_chart_x_labels(sorted_dates, layout)
 
     @staticmethod
     def _compute_chart_layout(
@@ -993,6 +1006,7 @@ class ClaudeCodeRecall:
     def _draw_chart_bars(
         self,
         counts: dict[str, int],
+        sorted_dates: list[str],
         layout: dict[str, float],
         max_count: int,
     ) -> None:
@@ -1002,7 +1016,7 @@ class ClaudeCodeRecall:
         chart_height = layout["chart_height"]
         y2 = CHART_MARGIN_TOP + chart_height
 
-        for i, date_str in enumerate(sorted(counts.keys())):
+        for i, date_str in enumerate(sorted_dates):
             count = counts[date_str]
             bar_height = (count / max_count) * chart_height
             x1 = CHART_MARGIN_LEFT + i * (bar_width + gap)
@@ -1031,10 +1045,10 @@ class ClaudeCodeRecall:
             )
 
     def _draw_chart_x_labels(
-        self, counts: dict[str, int], layout: dict[str, float]
+        self, sorted_dates: list[str], layout: dict[str, float]
     ) -> None:
         assert self.chart_canvas is not None
-        dates = sorted(counts.keys())
+        dates = sorted_dates
         num_bars = len(dates)
         bar_width = layout["bar_width"]
         gap = layout["gap"]
@@ -1059,12 +1073,12 @@ class ClaudeCodeRecall:
             return
         self.chart_canvas.delete("tooltip")
         text = f"{date_str}: {get_text('chart_prompts', count=count)}"
-        x, y = event.x, event.y - 20
+        x, y = event.x, event.y - TOOLTIP_OFFSET_Y
         bbox_id = self.chart_canvas.create_rectangle(
-            x - 40,
-            y - 10,
-            x + 40,
-            y + 10,
+            x - TOOLTIP_HALF_WIDTH,
+            y - TOOLTIP_HALF_HEIGHT,
+            x + TOOLTIP_HALF_WIDTH,
+            y + TOOLTIP_HALF_HEIGHT,
             fill=COLOR_TEXT_DARK,
             outline="",
             tags="tooltip",
@@ -1075,7 +1089,11 @@ class ClaudeCodeRecall:
         bbox = self.chart_canvas.bbox(text_id)
         if bbox:
             self.chart_canvas.coords(
-                bbox_id, bbox[0] - 5, bbox[1] - 3, bbox[2] + 5, bbox[3] + 3
+                bbox_id,
+                bbox[0] - TOOLTIP_PAD_X,
+                bbox[1] - TOOLTIP_PAD_Y,
+                bbox[2] + TOOLTIP_PAD_X,
+                bbox[3] + TOOLTIP_PAD_Y,
             )
 
     def _hide_chart_tooltip(self) -> None:
@@ -1196,22 +1214,25 @@ class ClaudeCodeRecall:
         # ShellExecute経由で .bat を新コンソールで実行
         os.startfile(batch_path)
 
+    @staticmethod
+    def _build_resume_command(project_path: str, session_id: str) -> str:
+        """`cd <path> && claude --resume <id>` をシェルエスケープして返す（POSIX系）。"""
+        return (
+            f"cd {shlex.quote(project_path)} "
+            f"&& claude --resume {shlex.quote(session_id)}"
+        )
+
     def _resume_session_macos(self, project_path: str, session_id: str) -> None:
         """macOSでセッションを再開（osascript で Terminal にコマンド送信）。"""
-        safe_path = shlex.quote(project_path)
-        safe_id = shlex.quote(session_id)
-        cmd = f"cd {safe_path} && claude --resume {safe_id}"
+        cmd = self._build_resume_command(project_path, session_id)
         # AppleScript の二重引用符内エスケープ
         escaped = cmd.replace("\\", "\\\\").replace('"', '\\"')
         applescript = f'tell application "Terminal" to do script "{escaped}"'
         subprocess.Popen(["osascript", "-e", applescript])
 
-    @staticmethod
-    def _resume_session_linux(project_path: str, session_id: str) -> None:
+    def _resume_session_linux(self, project_path: str, session_id: str) -> None:
         """Linuxでセッションを再開（一般的なターミナルエミュレータを順に試行）。"""
-        safe_path = shlex.quote(project_path)
-        safe_id = shlex.quote(session_id)
-        script = f"cd {safe_path} && claude --resume {safe_id}; exec bash"
+        script = f"{self._build_resume_command(project_path, session_id)}; exec bash"
 
         terminals = [
             ["gnome-terminal", "--", "bash", "-c", script],
@@ -1237,9 +1258,7 @@ class ClaudeCodeRecall:
 
         try:
             file_path: Path = session["file_path"]
-            first_msg = truncate_text(
-                session["first_message"], FIRST_MESSAGE_DISPLAY_LENGTH
-            )
+            first_msg = self._short_first_message(session)
 
             # パストラバーサル防止（削除はユーザ要求外パスへの書き込みなので必須）
             if not is_safe_path(self.projects_dir, file_path):
